@@ -536,6 +536,13 @@ html[data-theme='night'] .style-picker-menu {
   text-wrap: pretty;
 }
 
+.sync-status {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--slate) 78%, transparent);
+}
+
 /* Keep polite region for a11y without stealing a flex gap slot when empty */
 .app > [aria-live] {
   display: contents;

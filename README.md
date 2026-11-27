@@ -1,17 +1,11 @@
 # Cuebin
 
-Personal song inbox: paste a link, play YouTube in-app, filter by mood / type / singer. List persists in `localStorage` — no accounts.
+Personal song inbox: paste YouTube links, listen while you work, filter by mood / type / singer.
 
-## Dev
+Playlist syncs to Postgres per signed-in Cursor viewer (`GET`/`PUT /api/playlist`). `localStorage` stays as cache and offline fallback.
 
 ```bash
 npm install
-npm run dev
-```
-
-## Build
-
-```bash
+npm run dev    # http://127.0.0.1:3000
 npm run build
-npm run preview
 ```

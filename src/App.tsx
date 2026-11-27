@@ -1,3 +1,5 @@
+'use client';
+
 import {
   useCallback,
   useEffect,
@@ -9,6 +11,11 @@ import {
 import { flushSync } from 'react-dom';
 import { autoTagFromMeta, dropTag, mergeManualTag } from './autotag';
 import { loadPrefs, loadSongs, savePrefs, saveSongs } from './storage';
+import {
+  createDebouncedCloudSave,
+  hydratePlaylistFromCloud,
+  type SyncStatus,
+} from './sync';
 import type {
   Filters,
   Song,
@@ -77,10 +84,13 @@ export default function App() {
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
   const [booted, setBooted] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [syncReady, setSyncReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const stylePickerRef = useRef<HTMLDivElement | null>(null);
   const queueRef = useRef<Song[]>([]);
   const activeIdRef = useRef<string | null>(null);
+  const cloudSaveRef = useRef(createDebouncedCloudSave(setSyncStatus));
   const embedOrigin =
     typeof window !== 'undefined' ? window.location.origin : undefined;
 
@@ -90,8 +100,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    void hydratePlaylistFromCloud().then(({ songs: next, status }) => {
+      if (cancelled) return;
+      setSongs(next);
+      setSyncStatus(status);
+      setSyncReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    // Always keep localStorage as cache / offline fallback.
     saveSongs(songs);
-  }, [songs]);
+    if (!syncReady) return;
+    cloudSaveRef.current(songs);
+  }, [songs, syncReady]);
 
   const themeLocked =
     visualStyle === 'neobrutal' || visualStyle === 'persona5';
@@ -491,6 +517,15 @@ export default function App() {
           </h1>
           <p className="tagline">
             Listen at your desk. Stay in the flow.
+          </p>
+          <p className="sync-status" aria-live="polite">
+            {syncStatus === 'loading'
+              ? 'Syncing playlist…'
+              : syncStatus === 'offline'
+                ? 'Offline — saved on this device'
+                : syncStatus === 'error'
+                  ? 'Cloud sync paused — using this device'
+                  : 'Synced across your devices'}
           </p>
         </div>
         <div className="header-controls">
