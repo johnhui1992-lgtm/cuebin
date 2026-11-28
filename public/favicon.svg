@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="6" fill="#D5DEE5"/>
-  <circle cx="16" cy="16" r="8" stroke="#2A6B78" stroke-width="2.5"/>
-  <circle cx="16" cy="16" r="2.5" fill="#B8893A"/>
+  <rect width="32" height="32" fill="#FFFFFF"/>
+  <!-- Option C waveform: short, tall, mid, peak(teal), mid, tall, short -->
+  <rect x="5.3" y="13.4" width="1.6" height="5.2" rx="0.8" fill="#32343A"/>
+  <rect x="8.6" y="8.5" width="1.6" height="15.0" rx="0.8" fill="#32343A"/>
+  <rect x="11.9" y="12.1" width="1.6" height="7.8" rx="0.8" fill="#32343A"/>
+  <rect x="15.2" y="6.1" width="1.6" height="19.8" rx="0.8" fill="#3E90A5"/>
+  <rect x="18.5" y="12.1" width="1.6" height="7.8" rx="0.8" fill="#32343A"/>
+  <rect x="21.8" y="8.5" width="1.6" height="15.0" rx="0.8" fill="#32343A"/>
+  <rect x="25.1" y="13.4" width="1.6" height="5.2" rx="0.8" fill="#32343A"/>
 </svg>
