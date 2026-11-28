@@ -14,6 +14,8 @@ import {
   LIBRARY_FULL_MESSAGE,
   MAX_LIBRARY_SONGS,
   MAX_MP3_BYTES,
+  MAX_MP3_MB,
+  UPLOAD_CHUNK_BYTES,
 } from './constants';
 import { loadPrefs, loadSongs, savePrefs, saveSongs } from './storage';
 import {
@@ -73,7 +75,8 @@ function uploadFailureNotice(
   switch (payload?.error) {
     case 'file_too_large':
     case 'truncated':
-      return `“${fileName}” is too large (max 15 MB).`;
+    case 'chunk_too_large':
+      return `“${fileName}” is too large (max ${MAX_MP3_MB} MB).`;
     case 'mp3_only':
       return 'Only .mp3 files can be uploaded.';
     case 'missing_file':
@@ -86,16 +89,104 @@ function uploadFailureNotice(
     case 'db_error':
       return 'Couldn’t save MP3 to cloud storage. Try again in a moment.';
     case 'timeout':
-      return 'Upload timed out — try a smaller MP3.';
+      return 'Upload timed out — try again.';
     case 'invalid_form':
-      return 'Couldn’t read the upload. Try again.';
+    case 'missing_chunks':
+    case 'size_mismatch':
+    case 'session_not_found':
+      return 'Upload didn’t finish. Try again.';
     default:
       break;
   }
-  if (status === 413) return `“${fileName}” is too large for the server.`;
+  if (status === 413) {
+    return `“${fileName}” was rejected as too large (max ${MAX_MP3_MB} MB).`;
+  }
   if (status >= 500) return `Upload failed (server ${status}). Try again.`;
   if (status > 0) return `Couldn’t upload “${fileName}” (${status}).`;
   return `Couldn’t upload “${fileName}”. Check your connection.`;
+}
+
+type UploadJson = { error?: string; message?: string; id?: string; url?: string };
+
+async function readUploadJson(res: Response): Promise<UploadJson | null> {
+  return (await res.json().catch(() => null)) as UploadJson | null;
+}
+
+/** Chunked upload — host rejects ~6MB single POSTs with bare 413. */
+async function uploadMp3File(
+  file: File,
+): Promise<
+  | { ok: true; id: string; url: string }
+  | { ok: false; status: number; payload: UploadJson | null }
+> {
+  const startRes = await fetch('/api/audio/session', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json',
+    },
+    body: JSON.stringify({
+      filename: file.name,
+      mimeType: file.type || 'audio/mpeg',
+      byteSize: file.size,
+    }),
+    cache: 'no-store',
+    credentials: 'same-origin',
+  });
+  const startBody = await readUploadJson(startRes);
+  if (!startRes.ok || !startBody || typeof startBody.id !== 'string') {
+    return {
+      ok: false,
+      status: startRes.status,
+      payload: startBody,
+    };
+  }
+
+  const sessionId = startBody.id;
+  const chunkSize =
+    typeof (startBody as { chunkSize?: number }).chunkSize === 'number' &&
+    (startBody as { chunkSize: number }).chunkSize > 0
+      ? (startBody as { chunkSize: number }).chunkSize
+      : UPLOAD_CHUNK_BYTES;
+  const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
+
+  for (let i = 0; i < totalChunks; i += 1) {
+    const slice = file.slice(i * chunkSize, Math.min(file.size, (i + 1) * chunkSize));
+    const chunkRes = await fetch(
+      `/api/audio/session/${sessionId}/chunk/${i}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/octet-stream' },
+        body: slice,
+        cache: 'no-store',
+        credentials: 'same-origin',
+      },
+    );
+    if (!chunkRes.ok) {
+      return {
+        ok: false,
+        status: chunkRes.status,
+        payload: await readUploadJson(chunkRes),
+      };
+    }
+  }
+
+  const doneRes = await fetch(`/api/audio/session/${sessionId}/complete`, {
+    method: 'POST',
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+    credentials: 'same-origin',
+  });
+  const doneBody = await readUploadJson(doneRes);
+  if (!doneRes.ok || !doneBody?.id || !doneBody.url) {
+    return {
+      ok: false,
+      status: doneRes.status,
+      payload: doneBody,
+    };
+  }
+
+  return { ok: true, id: doneBody.id, url: doneBody.url };
 }
 
 const SUGGESTED = {
@@ -654,20 +745,13 @@ export default function App() {
           continue;
         }
         if (file.size > MAX_MP3_BYTES) {
-          setNotice(`“${file.name}” is too large (max 15 MB).`);
+          setNotice(`“${file.name}” is too large (max ${MAX_MP3_MB} MB).`);
           continue;
         }
 
-        const body = new FormData();
-        body.append('file', file, file.name);
-        let res: Response;
+        let uploaded: Awaited<ReturnType<typeof uploadMp3File>>;
         try {
-          res = await fetch('/api/audio', {
-            method: 'POST',
-            body,
-            cache: 'no-store',
-            credentials: 'same-origin',
-          });
+          uploaded = await uploadMp3File(file);
         } catch {
           setNotice(
             uploadFailureNotice(file.name, 0, {
@@ -676,28 +760,30 @@ export default function App() {
           );
           continue;
         }
-        if (res.status === 401) {
-          setNotice('Sign in to sync uploads across devices.');
-          break;
-        }
-        if (!res.ok) {
-          const err = (await res.json().catch(() => null)) as {
-            error?: string;
-            message?: string;
-          } | null;
-          setNotice(uploadFailureNotice(file.name, res.status, err));
-          if (err?.error === 'library_full' || res.status === 409) break;
+        if (!uploaded.ok) {
+          if (uploaded.status === 401) {
+            setNotice('Sign in to sync uploads across devices.');
+            break;
+          }
+          setNotice(
+            uploadFailureNotice(file.name, uploaded.status, uploaded.payload),
+          );
+          if (
+            uploaded.payload?.error === 'library_full' ||
+            uploaded.status === 409
+          ) {
+            break;
+          }
           continue;
         }
-        const data = (await res.json()) as { id: string; url: string };
         const id = uid();
         const song: Song = {
           id,
-          url: data.url,
+          url: uploaded.url,
           title: titleFromFilename(file.name),
           youtubeId: null,
           source: 'mp3',
-          audioId: data.id,
+          audioId: uploaded.id,
           mood: [],
           type: [],
           singer: [],

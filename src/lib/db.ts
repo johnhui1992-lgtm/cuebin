@@ -61,7 +61,7 @@ export async function sqlDirect<T = Record<string, unknown>>(
   return withLocal<T>(text, params);
 }
 
-/** Make sure audio_files exists even if build-time migrate skipped 002. */
+/** Make sure audio tables exist even if build-time migrate skipped them. */
 export async function ensureAudioSchema(): Promise<void> {
   if (!g.__cuebinAudioSchema) {
     g.__cuebinAudioSchema = (async () => {
@@ -79,6 +79,27 @@ export async function ensureAudioSchema(): Promise<void> {
         )`,
         `create index if not exists audio_files_user_stage_idx
           on audio_files (user_id, stage)`,
+        `create table if not exists audio_upload_sessions (
+          id text not null,
+          user_id text not null,
+          stage text not null default 'production',
+          filename text not null,
+          mime_type text not null default 'audio/mpeg',
+          total_bytes integer not null,
+          created_at timestamptz not null default now(),
+          primary key (user_id, stage, id)
+        )`,
+        `create table if not exists audio_upload_chunks (
+          user_id text not null,
+          stage text not null default 'production',
+          session_id text not null,
+          chunk_index integer not null,
+          byte_size integer not null,
+          data bytea not null,
+          primary key (user_id, stage, session_id, chunk_index)
+        )`,
+        `create index if not exists audio_upload_chunks_session_idx
+          on audio_upload_chunks (user_id, stage, session_id)`,
       ];
       for (const statement of statements) {
         await sqlDirect(statement, []);

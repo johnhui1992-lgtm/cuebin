@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { MAX_LIBRARY_SONGS, MAX_MP3_BYTES } from "../constants";
+import { MAX_LIBRARY_SONGS, MAX_MP3_BYTES, MAX_MP3_MB } from "../constants";
 import type { Song } from "../types";
 import { ensureAudioSchema, sql, sqlDirect } from "./db";
 
@@ -100,7 +100,7 @@ export async function insertAudioFile(opts: {
     return {
       error: "file_too_large",
       status: 413,
-      message: "MP3 must be 15 MB or smaller.",
+      message: `MP3 must be ${MAX_MP3_MB} MB or smaller.`,
     };
   }
 

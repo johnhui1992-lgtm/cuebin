@@ -1,6 +1,6 @@
 import { requireIdentity } from "../../../cursor/identity";
 import { insertAudioFile } from "../../../src/lib/audio";
-import { MAX_MP3_BYTES } from "../../../src/constants";
+import { MAX_MP3_BYTES, MAX_MP3_MB } from "../../../src/constants";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -104,7 +104,7 @@ export async function POST(request: Request) {
     return jsonError(
       "file_too_large",
       413,
-      "MP3 must be 15 MB or smaller.",
+      `MP3 must be ${MAX_MP3_MB} MB or smaller.`,
       { maxBytes: MAX_MP3_BYTES, byteSize: file.size },
     );
   }
@@ -127,12 +127,12 @@ export async function POST(request: Request) {
     return jsonError("empty_file", 400, "That file was empty.");
   }
 
-  // Body may have been truncated by a proxy size limit.
+  // Body may have been truncated by a proxy size limit — use chunked upload.
   if (file.size > 0 && bytes.byteLength < file.size) {
     return jsonError(
       "truncated",
       413,
-      "Upload was truncated — try a smaller MP3 (under 10 MB).",
+      "Upload was truncated by the host. Cuebin will retry in smaller chunks — refresh and try again.",
       { expected: file.size, received: bytes.byteLength },
     );
   }
