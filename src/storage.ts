@@ -14,11 +14,19 @@ const DEFAULT_PREFS: Prefs = {
 };
 
 function migrateSong(raw: Partial<Song> & { id: string; url: string; title: string }): Song {
+  const audioId =
+    typeof raw.audioId === 'string' && raw.audioId ? raw.audioId : null;
+  const source =
+    raw.source === 'mp3' || audioId
+      ? 'mp3'
+      : 'youtube';
   return {
     id: raw.id,
     url: raw.url,
     title: raw.title,
-    youtubeId: raw.youtubeId ?? null,
+    youtubeId: source === 'mp3' ? null : (raw.youtubeId ?? null),
+    source,
+    audioId: source === 'mp3' ? audioId : null,
     mood: Array.isArray(raw.mood) ? raw.mood : [],
     type: Array.isArray(raw.type) ? raw.type : [],
     singer: Array.isArray(raw.singer) ? raw.singer : [],

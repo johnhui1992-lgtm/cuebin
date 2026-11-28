@@ -1,10 +1,17 @@
 export type TagSource = 'auto' | 'manual';
 
+/** YouTube paste vs uploaded MP3 (cloud-synced). */
+export type SongSource = 'youtube' | 'mp3';
+
 export type Song = {
   id: string;
   url: string;
   title: string;
   youtubeId: string | null;
+  /** youtube (default for legacy rows) or uploaded mp3 */
+  source: SongSource;
+  /** Postgres audio_files id when source === 'mp3' */
+  audioId: string | null;
   mood: string[];
   type: string[];
   singer: string[];
@@ -16,6 +23,8 @@ export type Song = {
   };
   createdAt: number;
 };
+
+export type LibraryTab = 'all' | 'youtube' | 'mp3';
 
 export type TagField = 'mood' | 'type' | 'singer';
 

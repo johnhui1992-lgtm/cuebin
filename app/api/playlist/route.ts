@@ -1,4 +1,5 @@
 import { requireIdentity } from "../../../cursor/identity";
+import { pruneOrphanAudio } from "../../../src/lib/audio";
 import { sql } from "../../../src/lib/db";
 import { normalizeSongs } from "../../../src/lib/playlist";
 import type { Song } from "../../../src/types";
@@ -61,6 +62,8 @@ export async function PUT(request: Request) {
      set songs = excluded.songs, updated_at = now()`,
     [identity.sub, identity.stage, JSON.stringify(songs)],
   );
+
+  await pruneOrphanAudio(identity.sub, identity.stage, songs);
 
   return Response.json({ ok: true, songs }, { headers: NO_STORE });
 }

@@ -10,6 +10,11 @@ import {
 } from 'react';
 import { flushSync } from 'react-dom';
 import { autoTagFromMeta, dropTag, mergeManualTag } from './autotag';
+import {
+  LIBRARY_FULL_MESSAGE,
+  MAX_LIBRARY_SONGS,
+  MAX_MP3_BYTES,
+} from './constants';
 import { loadPrefs, loadSongs, savePrefs, saveSongs } from './storage';
 import {
   createDebouncedCloudSave,
@@ -18,6 +23,7 @@ import {
 } from './sync';
 import type {
   Filters,
+  LibraryTab,
   Song,
   TagField,
   TagSource,
@@ -34,6 +40,29 @@ import {
   youtubeThumb,
 } from './youtube';
 import './index.css';
+
+const LIBRARY_TABS: { id: LibraryTab; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'youtube', label: 'YouTube' },
+  { id: 'mp3', label: 'MP3' },
+];
+
+function isMp3Song(song: Song): boolean {
+  return song.source === 'mp3' && Boolean(song.audioId);
+}
+
+function songPlayable(song: Song): boolean {
+  return Boolean(song.youtubeId) || isMp3Song(song);
+}
+
+function audioUrl(song: Song): string | null {
+  return isMp3Song(song) && song.audioId ? `/api/audio/${song.audioId}` : null;
+}
+
+function titleFromFilename(name: string): string {
+  const base = name.replace(/\.mp3$/i, '').trim();
+  return base || 'Uploaded track';
+}
 
 const SUGGESTED = {
   mood: ['calm', 'hype', 'melancholy', 'focus', 'late-night', 'rainy'],
@@ -86,13 +115,20 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
+  const [libraryTab, setLibraryTab] = useState<LibraryTab>('all');
+  const [uploading, setUploading] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const libraryScrollerRef = useRef<HTMLDivElement | null>(null);
+  const libraryScrollLockRef = useRef(false);
   const stylePickerRef = useRef<HTMLDivElement | null>(null);
   const queueRef = useRef<Song[]>([]);
   const activeIdRef = useRef<string | null>(null);
   const cloudSaveRef = useRef(createDebouncedCloudSave(setSyncStatus));
   const embedOrigin =
     typeof window !== 'undefined' ? window.location.origin : undefined;
+  const libraryFull = songs.length >= MAX_LIBRARY_SONGS;
 
   useEffect(() => {
     const t = requestAnimationFrame(() => setBooted(true));
@@ -189,11 +225,65 @@ export default function App() {
   }, [songs, activeId]);
 
   const active = songs.find((s) => s.id === activeId) ?? null;
+  const activeIsMp3 = active ? isMp3Song(active) : false;
+  const activeAudioSrc = active ? audioUrl(active) : null;
 
   useEffect(() => {
-    // New track → autoplay embed; reset local play state.
-    setIsPlaying(Boolean(active?.youtubeId));
-  }, [active?.id, active?.youtubeId]);
+    // New track → prepare playback; YouTube autoplays via embed, MP3 via audio el.
+    if (!active) {
+      setIsPlaying(false);
+      return;
+    }
+    if (activeIsMp3) {
+      setIsPlaying(true);
+      return;
+    }
+    setIsPlaying(Boolean(active.youtubeId));
+  }, [active?.id, active?.youtubeId, activeIsMp3]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (!activeIsMp3 || !activeAudioSrc) {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+      return;
+    }
+    // Pause YouTube when switching to MP3.
+    postYoutubeCommand(iframeRef.current, 'pauseVideo');
+    if (audio.src !== new URL(activeAudioSrc, window.location.origin).href) {
+      audio.src = activeAudioSrc;
+    }
+    void audio.play().then(
+      () => setIsPlaying(true),
+      () => setIsPlaying(false),
+    );
+  }, [active?.id, activeIsMp3, activeAudioSrc]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    if (!active || !songPlayable(active)) {
+      navigator.mediaSession.metadata = null;
+      return;
+    }
+    const artwork = active.youtubeId
+      ? [
+          {
+            src: youtubeThumb(active.youtubeId),
+            sizes: '320x180',
+            type: 'image/jpeg',
+          },
+        ]
+      : [];
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: active.title,
+      artist: active.singer[0] ?? (activeIsMp3 ? 'Uploaded' : 'YouTube'),
+      album: 'Cuebin',
+      artwork,
+    });
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  }, [active, activeIsMp3, isPlaying]);
 
   /** Playlist always loops: advance or wrap to first. */
   const advanceFromEnd = useCallback(() => {
@@ -278,6 +368,15 @@ export default function App() {
 
   const filtersActive = Boolean(filters.mood || filters.type || filters.singer);
 
+  const youtubeFiltered = useMemo(
+    () => filtered.filter((s) => s.source !== 'mp3'),
+    [filtered],
+  );
+  const mp3Filtered = useMemo(
+    () => filtered.filter((s) => s.source === 'mp3'),
+    [filtered],
+  );
+
   /** Keep shuffle order in sync with the current filtered set. */
   useEffect(() => {
     if (!shuffle) return;
@@ -321,9 +420,6 @@ export default function App() {
     }
   }, [filtered.length, shuffle]);
 
-  const queueIndex = activeId
-    ? queue.findIndex((s) => s.id === activeId)
-    : -1;
   /** Visible queue nonempty → prev/next can enter or step (always loops). */
   const canStep = queue.length > 0;
 
@@ -331,46 +427,78 @@ export default function App() {
   activeIdRef.current = activeId;
 
   const playActive = useCallback(() => {
+    if (activeIsMp3) {
+      void audioRef.current?.play().then(
+        () => setIsPlaying(true),
+        () => setIsPlaying(false),
+      );
+      return;
+    }
     postYoutubeCommand(iframeRef.current, 'playVideo');
     setIsPlaying(true);
-  }, []);
+  }, [activeIsMp3]);
 
   const pauseActive = useCallback(() => {
+    if (activeIsMp3) {
+      audioRef.current?.pause();
+      setIsPlaying(false);
+      return;
+    }
     postYoutubeCommand(iframeRef.current, 'pauseVideo');
     setIsPlaying(false);
-  }, []);
+  }, [activeIsMp3]);
 
   function togglePlayPause() {
-    if (!active?.youtubeId) return;
+    if (!active || !songPlayable(active)) return;
     if (isPlaying) pauseActive();
     else playActive();
   }
 
-  function goPrev() {
+  const goPrev = useCallback(() => {
     if (!canStep) return;
-    if (queueIndex < 0) {
-      setActiveId(queue[queue.length - 1].id);
+    const q = queueRef.current;
+    const idx = activeIdRef.current
+      ? q.findIndex((s) => s.id === activeIdRef.current)
+      : -1;
+    if (idx < 0) {
+      setActiveId(q[q.length - 1].id);
       setTagsOpen(false);
       return;
     }
-    const target =
-      queueIndex > 0 ? queue[queueIndex - 1] : queue[queue.length - 1];
+    const target = idx > 0 ? q[idx - 1] : q[q.length - 1];
     setActiveId(target.id);
     setTagsOpen(false);
-  }
+  }, [canStep]);
 
-  function goNext() {
+  const goNext = useCallback(() => {
     if (!canStep) return;
-    if (queueIndex < 0) {
-      setActiveId(queue[0].id);
+    const q = queueRef.current;
+    const idx = activeIdRef.current
+      ? q.findIndex((s) => s.id === activeIdRef.current)
+      : -1;
+    if (idx < 0) {
+      setActiveId(q[0].id);
       setTagsOpen(false);
       return;
     }
-    const target =
-      queueIndex < queue.length - 1 ? queue[queueIndex + 1] : queue[0];
+    const target = idx < q.length - 1 ? q[idx + 1] : q[0];
     setActiveId(target.id);
     setTagsOpen(false);
-  }
+  }, [canStep]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.setActionHandler('play', () => playActive());
+    navigator.mediaSession.setActionHandler('pause', () => pauseActive());
+    navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
+    navigator.mediaSession.setActionHandler('nexttrack', () => goNext());
+    return () => {
+      navigator.mediaSession.setActionHandler('play', null);
+      navigator.mediaSession.setActionHandler('pause', null);
+      navigator.mediaSession.setActionHandler('previoustrack', null);
+      navigator.mediaSession.setActionHandler('nexttrack', null);
+    };
+  }, [playActive, pauseActive, goPrev, goNext]);
 
   function toggleShuffle() {
     if (filtered.length < 2) return;
@@ -395,6 +523,10 @@ export default function App() {
     e.preventDefault();
     const raw = urlInput.trim();
     if (!raw) return;
+    if (songs.length >= MAX_LIBRARY_SONGS) {
+      setNotice(LIBRARY_FULL_MESSAGE);
+      return;
+    }
 
     const youtubeId = parseYoutubeId(raw);
     const id = uid();
@@ -403,6 +535,8 @@ export default function App() {
       url: raw.includes('://') ? raw : `https://${raw}`,
       title: titleFromUrl(raw, youtubeId),
       youtubeId,
+      source: 'youtube',
+      audioId: null,
       mood: [],
       type: [],
       singer: [],
@@ -413,6 +547,7 @@ export default function App() {
     setSongs((prev) => [provisional, ...prev]);
     setUrlInput('');
     setActiveId(id);
+    selectLibraryTab('all');
     setTagsOpen(true);
 
     if (!youtubeId) {
@@ -442,6 +577,139 @@ export default function App() {
     if (n > 0) {
       setNotice(`Auto-tagged ${n} label${n === 1 ? '' : 's'} — edit anytime.`);
     }
+  }
+
+  async function handleUploadMp3(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    let slotsLeft = MAX_LIBRARY_SONGS - songs.length;
+    if (slotsLeft <= 0) {
+      setNotice(LIBRARY_FULL_MESSAGE);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const picked = [...fileList];
+    if (picked.length > slotsLeft) {
+      setNotice(LIBRARY_FULL_MESSAGE);
+    }
+    const files = picked.slice(0, slotsLeft);
+
+    setUploading(true);
+    let added = 0;
+    let lastId: string | null = null;
+
+    try {
+      for (const file of files) {
+        if (slotsLeft <= 0) {
+          setNotice(LIBRARY_FULL_MESSAGE);
+          break;
+        }
+        const name = file.name.toLowerCase();
+        const type = (file.type || '').toLowerCase();
+        const looksMp3 =
+          name.endsWith('.mp3') ||
+          type === 'audio/mpeg' ||
+          type === 'audio/mp3' ||
+          type === 'audio/mpeg3';
+        if (!looksMp3) {
+          setNotice('Only .mp3 files can be uploaded.');
+          continue;
+        }
+        if (file.size > MAX_MP3_BYTES) {
+          setNotice(`“${file.name}” is too large (max 15 MB).`);
+          continue;
+        }
+
+        const body = new FormData();
+        body.append('file', file);
+        const res = await fetch('/api/audio', {
+          method: 'POST',
+          body,
+          cache: 'no-store',
+        });
+        if (res.status === 409) {
+          setNotice(LIBRARY_FULL_MESSAGE);
+          break;
+        }
+        if (res.status === 401) {
+          setNotice('Sign in to sync uploads across devices.');
+          break;
+        }
+        if (!res.ok) {
+          const err = (await res.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          setNotice(
+            err?.error === 'file_too_large'
+              ? `“${file.name}” is too large (max 15 MB).`
+              : `Couldn’t upload “${file.name}”.`,
+          );
+          continue;
+        }
+        const data = (await res.json()) as { id: string; url: string };
+        const id = uid();
+        const song: Song = {
+          id,
+          url: data.url,
+          title: titleFromFilename(file.name),
+          youtubeId: null,
+          source: 'mp3',
+          audioId: data.id,
+          mood: [],
+          type: [],
+          singer: [],
+          tagSource: emptyTagSource(),
+          createdAt: Date.now(),
+        };
+        setSongs((prev) => [song, ...prev]);
+        added += 1;
+        slotsLeft -= 1;
+        lastId = id;
+      }
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+
+    if (added > 0) {
+      selectLibraryTab(added === 1 ? 'mp3' : 'all');
+      if (lastId) {
+        setActiveId(lastId);
+        setTagsOpen(true);
+      }
+      if (added === 1) {
+        setNotice('MP3 uploaded — synced to your library.');
+      } else {
+        setNotice(`${added} MP3s uploaded — synced to your library.`);
+      }
+    }
+  }
+
+  function selectLibraryTab(tab: LibraryTab) {
+    setLibraryTab(tab);
+    const scroller = libraryScrollerRef.current;
+    if (!scroller || scroller.clientWidth === 0) return;
+    const index = LIBRARY_TABS.findIndex((t) => t.id === tab);
+    if (index < 0) return;
+    const target = scroller.clientWidth * index;
+    if (Math.abs(scroller.scrollLeft - target) <= 2) return;
+    libraryScrollLockRef.current = true;
+    scroller.scrollTo({ left: target, behavior: 'smooth' });
+    const unlock = () => {
+      libraryScrollLockRef.current = false;
+      scroller.removeEventListener('scrollend', unlock);
+    };
+    scroller.addEventListener('scrollend', unlock, { once: true });
+    window.setTimeout(unlock, 450);
+  }
+
+  function onLibraryScroll() {
+    if (libraryScrollLockRef.current) return;
+    const scroller = libraryScrollerRef.current;
+    if (!scroller || scroller.clientWidth === 0) return;
+    const index = Math.round(scroller.scrollLeft / scroller.clientWidth);
+    const next = LIBRARY_TABS[index]?.id;
+    if (next && next !== libraryTab) setLibraryTab(next);
   }
 
   function updateSong(id: string, patch: Partial<Song>) {
@@ -618,10 +886,47 @@ export default function App() {
           autoComplete="off"
           spellCheck={false}
         />
-        <button type="submit" className="btn-primary" disabled={!urlInput.trim()}>
+        <button
+          type="submit"
+          className="btn-primary"
+          disabled={!urlInput.trim() || libraryFull || uploading}
+        >
           Add
         </button>
+        <input
+          ref={fileInputRef}
+          id="mp3-upload"
+          className="sr-only"
+          type="file"
+          accept="audio/mpeg,.mp3"
+          multiple
+          onChange={(e) => void handleUploadMp3(e.target.files)}
+        />
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={libraryFull || uploading}
+          aria-controls="mp3-upload"
+          onClick={() => {
+            if (libraryFull) {
+              setNotice(LIBRARY_FULL_MESSAGE);
+              return;
+            }
+            fileInputRef.current?.click();
+          }}
+        >
+          {uploading ? 'Uploading…' : 'Upload MP3'}
+        </button>
       </form>
+      <audio
+        ref={audioRef}
+        preload="metadata"
+        playsInline
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => advanceFromEnd()}
+        className="sr-only"
+      />
 
       <div aria-live="polite" aria-atomic="true">
         {notice && (
@@ -686,7 +991,7 @@ export default function App() {
                 type="button"
                 className="transport-btn transport-btn-play"
                 aria-label={isPlaying ? 'Pause' : 'Play'}
-                disabled={!active?.youtubeId}
+                disabled={!active || !songPlayable(active)}
                 onClick={togglePlayPause}
               >
                 {isPlaying ? (
@@ -805,6 +1110,21 @@ export default function App() {
                     </div>
                   </div>
                 </>
+              ) : activeIsMp3 ? (
+                <div className="now-playing-slot is-open">
+                  <div className="now-playing-slot-inner">
+                    <div className="now-playing glass-inset">
+                      <span className="now-art now-art-note" aria-hidden="true">
+                        ♪
+                      </span>
+                      <div className="now-copy">
+                        <p className="now-label">Listening</p>
+                        <p className="now-title">{active.title}</p>
+                        <p className="now-hint">Background play · MP3</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               ) : (
                 <div className="player-unsupported">
                   <p>Can’t play this link yet.</p>
@@ -888,8 +1208,30 @@ export default function App() {
               {filtersActive
                 ? `${filtered.length} of ${songs.length}`
                 : `${songs.length} song${songs.length === 1 ? '' : 's'}`}
+              {libraryFull ? ' · full' : ''}
             </span>
-            <span className="list-head-muted">on this device</span>
+            <span className="list-head-muted">synced library</span>
+          </div>
+
+          <div className="library-tabs" role="tablist" aria-label="Library">
+            {LIBRARY_TABS.map((tab, index) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                id={`library-tab-${tab.id}`}
+                className={`library-tab ${libraryTab === tab.id ? 'is-active' : ''}`}
+                aria-selected={libraryTab === tab.id}
+                aria-controls={`library-panel-${tab.id}`}
+                tabIndex={libraryTab === tab.id ? 0 : -1}
+                onClick={() => selectLibraryTab(tab.id)}
+              >
+                {tab.label}
+                {index < LIBRARY_TABS.length - 1 ? (
+                  <span className="library-tab-rule" aria-hidden="true" />
+                ) : null}
+              </button>
+            ))}
           </div>
 
           {songs.length === 0 ? (
@@ -902,72 +1244,76 @@ export default function App() {
               </button>
             </p>
           ) : (
-            <ul className="song-list">
-              {filtered.map((song) => (
-                <li
-                  key={song.id}
-                  className={`song-row ${activeId === song.id ? 'is-active' : ''}`}
+            <>
+              <div
+                className="library-scroller"
+                ref={libraryScrollerRef}
+                onScroll={onLibraryScroll}
+              >
+                <div
+                  className="library-page"
+                  role="tabpanel"
+                  id="library-panel-all"
+                  aria-labelledby="library-tab-all"
+                  aria-hidden={libraryTab !== 'all'}
                 >
-                  <button
-                    type="button"
-                    className="song-main"
-                    onClick={() => {
-                      setActiveId(song.id);
+                  <SongList
+                    songs={filtered}
+                    activeId={activeId}
+                    emptyHint="Nothing in All yet."
+                    onSelect={(id) => {
+                      setActiveId(id);
                       setTagsOpen(false);
                     }}
-                  >
-                    <span className="thumb">
-                      {song.youtubeId ? (
-                        <img
-                          src={youtubeThumb(song.youtubeId)}
-                          alt=""
-                          width={43}
-                          height={43}
-                          loading="lazy"
-                        />
-                      ) : (
-                        <span className="thumb-fallback" aria-hidden="true" />
-                      )}
-                    </span>
-                    <span className="song-meta">
-                      <span className="song-title">{song.title}</span>
-                      <span className="song-sub">
-                        {song.youtubeId ? (
-                          song.singer[0] ?? 'YouTube'
-                        ) : (
-                          <span className="cant-play">Saved · can’t play yet</span>
-                        )}
-                      </span>
-                      {(song.mood.length > 0 || song.type.length > 0) && (
-                        <span className="tag-preview">
-                          {[...song.mood, ...song.type].slice(0, 3).map((t) => (
-                            <span
-                              key={t}
-                              className={`mini-tag ${
-                                song.tagSource.mood[t] === 'auto' ||
-                                song.tagSource.type[t] === 'auto'
-                                  ? 'is-auto'
-                                  : ''
-                              }`}
-                            >
-                              {t}
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label={`Remove ${song.title}`}
-                    onClick={() => removeSong(song.id, song.title)}
-                  >
-                    <span aria-hidden="true">×</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+                    onRemove={removeSong}
+                  />
+                </div>
+                <div
+                  className="library-page"
+                  role="tabpanel"
+                  id="library-panel-youtube"
+                  aria-labelledby="library-tab-youtube"
+                  aria-hidden={libraryTab !== 'youtube'}
+                >
+                  <SongList
+                    songs={youtubeFiltered}
+                    activeId={activeId}
+                    emptyHint="No YouTube songs yet. Paste a link above."
+                    onSelect={(id) => {
+                      setActiveId(id);
+                      setTagsOpen(false);
+                    }}
+                    onRemove={removeSong}
+                  />
+                </div>
+                <div
+                  className="library-page"
+                  role="tabpanel"
+                  id="library-panel-mp3"
+                  aria-labelledby="library-tab-mp3"
+                  aria-hidden={libraryTab !== 'mp3'}
+                >
+                  <SongList
+                    songs={mp3Filtered}
+                    activeId={activeId}
+                    emptyHint="No MP3s yet. Upload a file you own."
+                    onSelect={(id) => {
+                      setActiveId(id);
+                      setTagsOpen(false);
+                    }}
+                    onRemove={removeSong}
+                  />
+                </div>
+              </div>
+              <div className="library-dots" aria-hidden="true">
+                {LIBRARY_TABS.map((tab) => (
+                  <span
+                    key={tab.id}
+                    className={`library-dot ${libraryTab === tab.id ? 'is-active' : ''}`}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </div>
       </main>
@@ -980,10 +1326,103 @@ function EmptyState() {
     <div className="empty">
       <p className="empty-lead">Nothing here yet</p>
       <p className="empty-hint">
-        Paste a YouTube link. Cuebin auto-tags mood, type, and singer so you can
-        filter while you work.
+        Paste a YouTube link or upload an MP3. Cuebin syncs your library across
+        signed-in devices.
       </p>
     </div>
+  );
+}
+
+function SongList({
+  songs,
+  activeId,
+  emptyHint,
+  onSelect,
+  onRemove,
+}: {
+  songs: Song[];
+  activeId: string | null;
+  emptyHint: string;
+  onSelect: (id: string) => void;
+  onRemove: (id: string, title: string) => void;
+}) {
+  if (songs.length === 0) {
+    return <p className="empty-filtered">{emptyHint}</p>;
+  }
+
+  return (
+    <ul className="song-list">
+      {songs.map((song) => {
+        const mp3 = isMp3Song(song);
+        return (
+          <li
+            key={song.id}
+            className={`song-row ${activeId === song.id ? 'is-active' : ''}`}
+          >
+            <button
+              type="button"
+              className="song-main"
+              onClick={() => onSelect(song.id)}
+            >
+              <span className="thumb">
+                {song.youtubeId ? (
+                  <img
+                    src={youtubeThumb(song.youtubeId)}
+                    alt=""
+                    width={43}
+                    height={43}
+                    loading="lazy"
+                  />
+                ) : mp3 ? (
+                  <span className="thumb-note" aria-hidden="true">
+                    ♪
+                  </span>
+                ) : (
+                  <span className="thumb-fallback" aria-hidden="true" />
+                )}
+              </span>
+              <span className="song-meta">
+                <span className="song-title">{song.title}</span>
+                <span className="song-sub">
+                  {mp3 ? (
+                    'Uploaded'
+                  ) : song.youtubeId ? (
+                    song.singer[0] ?? 'YouTube'
+                  ) : (
+                    <span className="cant-play">Saved · can’t play yet</span>
+                  )}
+                </span>
+                {(song.mood.length > 0 || song.type.length > 0) && (
+                  <span className="tag-preview">
+                    {[...song.mood, ...song.type].slice(0, 3).map((t) => (
+                      <span
+                        key={t}
+                        className={`mini-tag ${
+                          song.tagSource.mood[t] === 'auto' ||
+                          song.tagSource.type[t] === 'auto'
+                            ? 'is-auto'
+                            : ''
+                        }`}
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label={`Remove ${song.title}`}
+              onClick={() => onRemove(song.id, song.title)}
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
