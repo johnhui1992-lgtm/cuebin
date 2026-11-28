@@ -64,6 +64,40 @@ function titleFromFilename(name: string): string {
   return base || 'Uploaded track';
 }
 
+function uploadFailureNotice(
+  fileName: string,
+  status: number,
+  payload: { error?: string; message?: string } | null,
+): string {
+  if (payload?.message?.trim()) return payload.message.trim();
+  switch (payload?.error) {
+    case 'file_too_large':
+    case 'truncated':
+      return `“${fileName}” is too large (max 15 MB).`;
+    case 'mp3_only':
+      return 'Only .mp3 files can be uploaded.';
+    case 'missing_file':
+      return 'No MP3 file was received. Pick a .mp3 and try again.';
+    case 'empty_file':
+      return 'That file was empty.';
+    case 'library_full':
+      return LIBRARY_FULL_MESSAGE;
+    case 'schema_error':
+    case 'db_error':
+      return 'Couldn’t save MP3 to cloud storage. Try again in a moment.';
+    case 'timeout':
+      return 'Upload timed out — try a smaller MP3.';
+    case 'invalid_form':
+      return 'Couldn’t read the upload. Try again.';
+    default:
+      break;
+  }
+  if (status === 413) return `“${fileName}” is too large for the server.`;
+  if (status >= 500) return `Upload failed (server ${status}). Try again.`;
+  if (status > 0) return `Couldn’t upload “${fileName}” (${status}).`;
+  return `Couldn’t upload “${fileName}”. Check your connection.`;
+}
+
 const SUGGESTED = {
   mood: ['calm', 'hype', 'melancholy', 'focus', 'late-night', 'rainy'],
   type: ['indie', 'r&b', 'rock', 'lo-fi', 'pop', 'jazz', 'hip-hop', 'acoustic'],
@@ -610,7 +644,11 @@ export default function App() {
           name.endsWith('.mp3') ||
           type === 'audio/mpeg' ||
           type === 'audio/mp3' ||
-          type === 'audio/mpeg3';
+          type === 'audio/mpeg3' ||
+          type === 'audio/x-mpeg' ||
+          type === 'audio/x-mp3' ||
+          ((type === '' || type === 'application/octet-stream') &&
+            name.endsWith('.mp3'));
         if (!looksMp3) {
           setNotice('Only .mp3 files can be uploaded.');
           continue;
@@ -621,15 +659,22 @@ export default function App() {
         }
 
         const body = new FormData();
-        body.append('file', file);
-        const res = await fetch('/api/audio', {
-          method: 'POST',
-          body,
-          cache: 'no-store',
-        });
-        if (res.status === 409) {
-          setNotice(LIBRARY_FULL_MESSAGE);
-          break;
+        body.append('file', file, file.name);
+        let res: Response;
+        try {
+          res = await fetch('/api/audio', {
+            method: 'POST',
+            body,
+            cache: 'no-store',
+            credentials: 'same-origin',
+          });
+        } catch {
+          setNotice(
+            uploadFailureNotice(file.name, 0, {
+              message: 'Network error while uploading. Try again.',
+            }),
+          );
+          continue;
         }
         if (res.status === 401) {
           setNotice('Sign in to sync uploads across devices.');
@@ -638,12 +683,10 @@ export default function App() {
         if (!res.ok) {
           const err = (await res.json().catch(() => null)) as {
             error?: string;
+            message?: string;
           } | null;
-          setNotice(
-            err?.error === 'file_too_large'
-              ? `“${file.name}” is too large (max 15 MB).`
-              : `Couldn’t upload “${file.name}”.`,
-          );
+          setNotice(uploadFailureNotice(file.name, res.status, err));
+          if (err?.error === 'library_full' || res.status === 409) break;
           continue;
         }
         const data = (await res.json()) as { id: string; url: string };

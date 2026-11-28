@@ -7,14 +7,57 @@ export const maxDuration = 60;
 
 const NO_STORE = { "cache-control": "private, no-store" };
 
-function isMp3File(file: File): boolean {
-  const name = file.name.toLowerCase();
-  const type = (file.type || "").toLowerCase();
+type UploadBlob = {
+  name: string;
+  type: string;
+  size: number;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+};
+
+/** Duck-type File/Blob — `instanceof File` can fail across Node/undici realms. */
+function asUploadBlob(entry: FormDataEntryValue | null): UploadBlob | null {
+  if (entry == null || typeof entry === "string") return null;
+  const blob = entry as Blob & { name?: string };
+  if (typeof blob.arrayBuffer !== "function" || typeof blob.size !== "number") {
+    return null;
+  }
+  const name =
+    typeof blob.name === "string" && blob.name.trim()
+      ? blob.name.trim()
+      : "track.mp3";
+  return {
+    name,
+    type: typeof blob.type === "string" ? blob.type : "",
+    size: blob.size,
+    arrayBuffer: () => blob.arrayBuffer(),
+  };
+}
+
+function isMp3File(name: string, type: string): boolean {
+  const n = name.toLowerCase();
+  const t = type.toLowerCase();
   return (
-    name.endsWith(".mp3") ||
-    type === "audio/mpeg" ||
-    type === "audio/mp3" ||
-    type === "audio/mpeg3"
+    n.endsWith(".mp3") ||
+    t === "audio/mpeg" ||
+    t === "audio/mp3" ||
+    t === "audio/mpeg3" ||
+    t === "audio/x-mpeg" ||
+    t === "audio/x-mp3" ||
+    // iOS sometimes labels MP3s as octet-stream; allow when extension is .mp3
+    (t === "application/octet-stream" && n.endsWith(".mp3")) ||
+    (t === "" && n.endsWith(".mp3"))
+  );
+}
+
+function jsonError(
+  error: string,
+  status: number,
+  message: string,
+  extra?: Record<string, unknown>,
+) {
+  return Response.json(
+    { error, message, ...extra },
+    { status, headers: NO_STORE },
   );
 }
 
@@ -26,55 +69,90 @@ export async function POST(request: Request) {
   let form: FormData;
   try {
     form = await request.formData();
-  } catch {
-    return Response.json(
-      { error: "invalid_form" },
-      { status: 400, headers: NO_STORE },
+  } catch (error) {
+    const detail =
+      error instanceof Error ? error.message.slice(0, 160) : "invalid_form";
+    return jsonError(
+      "invalid_form",
+      400,
+      /large|size|limit|body/i.test(detail)
+        ? "Upload was too large for the server to accept."
+        : "Couldn’t read the upload. Try again.",
+      { detail },
     );
   }
 
-  const entry = form.get("file");
-  if (!(entry instanceof File)) {
-    return Response.json(
-      { error: "missing_file" },
-      { status: 400, headers: NO_STORE },
+  const file = asUploadBlob(form.get("file"));
+  if (!file) {
+    return jsonError(
+      "missing_file",
+      400,
+      "No MP3 file was received. Pick a .mp3 and try again.",
     );
   }
 
-  if (!isMp3File(entry)) {
-    return Response.json(
-      { error: "mp3_only" },
-      { status: 415, headers: NO_STORE },
+  if (!isMp3File(file.name, file.type)) {
+    return jsonError(
+      "mp3_only",
+      415,
+      "Only .mp3 files can be uploaded.",
+      { filename: file.name, mimeType: file.type || null },
     );
   }
 
-  if (entry.size > MAX_MP3_BYTES) {
-    return Response.json(
-      { error: "file_too_large", maxBytes: MAX_MP3_BYTES },
-      { status: 413, headers: NO_STORE },
+  if (file.size > MAX_MP3_BYTES) {
+    return jsonError(
+      "file_too_large",
+      413,
+      "MP3 must be 15 MB or smaller.",
+      { maxBytes: MAX_MP3_BYTES, byteSize: file.size },
     );
   }
 
-  const bytes = Buffer.from(await entry.arrayBuffer());
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(await file.arrayBuffer());
+  } catch (error) {
+    const detail =
+      error instanceof Error ? error.message.slice(0, 160) : "read_failed";
+    return jsonError(
+      "read_failed",
+      400,
+      "Couldn’t read that MP3 from the device.",
+      { detail },
+    );
+  }
+
+  if (bytes.byteLength === 0) {
+    return jsonError("empty_file", 400, "That file was empty.");
+  }
+
+  // Body may have been truncated by a proxy size limit.
+  if (file.size > 0 && bytes.byteLength < file.size) {
+    return jsonError(
+      "truncated",
+      413,
+      "Upload was truncated — try a smaller MP3 (under 10 MB).",
+      { expected: file.size, received: bytes.byteLength },
+    );
+  }
+
   const result = await insertAudioFile({
     userId: identity.sub,
     stage: identity.stage,
-    filename: entry.name,
-    mimeType: entry.type || "audio/mpeg",
+    filename: file.name,
+    mimeType: file.type || "audio/mpeg",
     bytes,
   });
 
   if ("error" in result) {
-    return Response.json(
-      { error: result.error },
-      { status: result.status, headers: NO_STORE },
-    );
+    return jsonError(result.error, result.status, result.message);
   }
 
   return Response.json(
     {
       id: result.id,
-      filename: entry.name,
+      filename: file.name,
       byteSize: bytes.byteLength,
       url: `/api/audio/${result.id}`,
     },
