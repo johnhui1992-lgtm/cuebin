@@ -35,6 +35,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <head>
+        {/* iOS still honors the apple-prefixed capable meta for standalone Home Screen */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="referrer" content="strict-origin-when-cross-origin" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
