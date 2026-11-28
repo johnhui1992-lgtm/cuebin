@@ -3,22 +3,26 @@ import { PGlite } from "@electric-sql/pglite";
 import pg from "pg";
 
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? "";
-let pool: pg.Pool | undefined;
-let local: Promise<PGlite> | undefined;
+
+/** Next route bundles can each get a fresh module scope — share via globalThis. */
+const g = globalThis as typeof globalThis & {
+  __cuebinPgPool?: pg.Pool;
+  __cuebinPglite?: Promise<PGlite>;
+};
 
 export async function sql<T = Record<string, unknown>>(
   text: string,
   params: unknown[] = [],
 ): Promise<T[]> {
   if (databaseUrl !== "") {
-    pool ??= new pg.Pool({ connectionString: databaseUrl, max: 5 });
-    return (await pool.query(text, params)).rows as T[];
+    g.__cuebinPgPool ??= new pg.Pool({ connectionString: databaseUrl, max: 5 });
+    return (await g.__cuebinPgPool.query(text, params)).rows as T[];
   }
-  local ??= startLocal().catch((error: unknown) => {
-    local = undefined;
+  g.__cuebinPglite ??= startLocal().catch((error: unknown) => {
+    g.__cuebinPglite = undefined;
     throw error;
   });
-  return (await (await local).query<T>(text, params)).rows;
+  return (await (await g.__cuebinPglite).query<T>(text, params)).rows;
 }
 
 async function startLocal(): Promise<PGlite> {

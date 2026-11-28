@@ -1,9 +1,17 @@
-import type { Song, TagSource } from "../types";
+import { MAX_LIBRARY_SONGS } from "../constants";
+import type { Song, SongSource, TagSource } from "../types";
 import { emptyTagSource } from "../types";
 
-const MAX_SONGS = 500;
+const MAX_SONGS = MAX_LIBRARY_SONGS;
 const MAX_STRING = 500;
 const MAX_TAGS = 32;
+
+function asSource(row: Record<string, unknown>): SongSource {
+  if (row.source === "mp3") return "mp3";
+  if (row.source === "youtube") return "youtube";
+  if (typeof row.audioId === "string" && row.audioId) return "mp3";
+  return "youtube";
+}
 
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -40,16 +48,23 @@ export function normalizeSongs(raw: unknown): Song[] {
       row.tagSource && typeof row.tagSource === "object"
         ? (row.tagSource as Record<string, unknown>)
         : null;
+    const source = asSource(row);
+    const audioId =
+      typeof row.audioId === "string" && row.audioId
+        ? row.audioId.slice(0, 80)
+        : null;
     songs.push({
       id: row.id.slice(0, 80),
       url: row.url.slice(0, MAX_STRING),
       title,
       youtubeId:
-        typeof row.youtubeId === "string"
-          ? row.youtubeId.slice(0, 32)
-          : row.youtubeId === null
-            ? null
+        source === "mp3"
+          ? null
+          : typeof row.youtubeId === "string"
+            ? row.youtubeId.slice(0, 32)
             : null,
+      source,
+      audioId: source === "mp3" ? audioId : null,
       mood: asStringArray(row.mood),
       type: asStringArray(row.type),
       singer: asStringArray(row.singer),
