@@ -62,6 +62,11 @@ html,
 body,
 #root {
   min-height: 100%;
+  min-height: 100dvh;
+}
+
+html {
+  background: var(--mist);
 }
 
 body {
@@ -73,6 +78,39 @@ body {
   -webkit-tap-highlight-color: rgba(42, 107, 120, 0.18);
   touch-action: manipulation;
   transition: background-color var(--t-panel) var(--ease-move), color var(--t-panel) var(--ease-move);
+}
+
+/* Mirror .app skin --mist onto html/body so the iOS status-bar safe area
+   matches the theme (Persona 5 black, Neo yellow, etc.), not default mist. */
+html[data-style='original'] {
+  --mist: #d5e2ea;
+  --atm-top: #e8f0f4;
+  --atm-bot: #c5d4de;
+}
+html[data-theme='night'][data-style='original'] {
+  --mist: #161b20;
+  --atm-top: #12171c;
+  --atm-bot: #1a2229;
+}
+html[data-style='minimal'] {
+  --mist: #f7f7f5;
+  --atm-top: #f7f7f5;
+  --atm-bot: #f0f0ec;
+}
+html[data-theme='night'][data-style='minimal'] {
+  --mist: #121212;
+  --atm-top: #121212;
+  --atm-bot: #0c0c0c;
+}
+html[data-style='neobrutal'] {
+  --mist: #ffe566;
+  --atm-top: #ffe566;
+  --atm-bot: #ffe566;
+}
+html[data-style='persona5'] {
+  --mist: #0a0a0a;
+  --atm-top: #0a0a0a;
+  --atm-bot: #0a0a0a;
 }
 
 button,
@@ -147,7 +185,9 @@ button {
   width: min(1200px, 92vw);
   max-width: 1280px;
   margin: 0 auto;
-  padding: 1.35rem 0 calc(2rem + env(safe-area-inset-bottom, 0px));
+  /* viewport-fit=cover: keep chrome clear of the notch / status bar */
+  padding: calc(1.35rem + env(safe-area-inset-top, 0px)) 0
+    calc(2rem + env(safe-area-inset-bottom, 0px));
   padding-left: max(0px, env(safe-area-inset-left, 0px));
   padding-right: max(0px, env(safe-area-inset-right, 0px));
   display: flex;
@@ -158,6 +198,14 @@ button {
 .atmosphere {
   position: fixed;
   inset: 0;
+  /* Extend past safe areas on notched iPhones (with viewport-fit=cover) */
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  min-height: 100%;
+  min-height: 100dvh;
   z-index: -1;
   background:
     linear-gradient(180deg, var(--atm-top) 0%, var(--mist) 42%, var(--atm-bot) 100%);
@@ -1426,7 +1474,10 @@ html[data-theme='night'] .style-picker-menu {
     --section-gap: 1.15rem;
     width: min(1200px, 92vw);
     max-width: 1280px;
-    padding: 1.85rem 0 2.5rem;
+    padding: calc(1.85rem + env(safe-area-inset-top, 0px)) 0
+      calc(2.5rem + env(safe-area-inset-bottom, 0px));
+    padding-left: max(0px, env(safe-area-inset-left, 0px));
+    padding-right: max(0px, env(safe-area-inset-right, 0px));
   }
 
   .brand {

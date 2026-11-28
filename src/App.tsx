@@ -320,21 +320,39 @@ export default function App() {
     delete root.dataset.listen;
     root.style.colorScheme =
       effectiveTheme === 'night' ? 'dark' : 'light';
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) {
-      const colors: Record<VisualStyle, { day: string; night: string }> = {
-        original: { day: '#D5E2EA', night: '#161B20' },
-        minimal: { day: '#F7F7F5', night: '#121212' },
-        neobrutal: { day: '#FFE566', night: '#FFE566' },
-        persona5: { day: '#0A0A0A', night: '#0A0A0A' },
-      };
-      meta.setAttribute(
-        'content',
-        effectiveTheme === 'night'
-          ? colors[visualStyle].night
-          : colors[visualStyle].day,
-      );
+
+    // Match iOS Home Screen status bar / theme-color to each skin background.
+    const colors: Record<VisualStyle, { day: string; night: string }> = {
+      original: { day: '#D5E2EA', night: '#161B20' },
+      minimal: { day: '#F7F7F5', night: '#121212' },
+      neobrutal: { day: '#FFE566', night: '#FFE566' },
+      persona5: { day: '#0A0A0A', night: '#0A0A0A' },
+    };
+    const chrome =
+      effectiveTheme === 'night'
+        ? colors[visualStyle].night
+        : colors[visualStyle].day;
+    const darkChrome =
+      visualStyle === 'persona5' || effectiveTheme === 'night';
+    // Translucent on dark skins so stripes/atmosphere show through; default on
+    // light skins so status icons stay dark/readable over mist/yellow/cream.
+    const statusBarStyle = darkChrome ? 'black-translucent' : 'default';
+
+    root.style.backgroundColor = chrome;
+    if (document.body) document.body.style.backgroundColor = chrome;
+
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) themeMeta.setAttribute('content', chrome);
+
+    let statusMeta = document.querySelector(
+      'meta[name="apple-mobile-web-app-status-bar-style"]',
+    );
+    if (!statusMeta) {
+      statusMeta = document.createElement('meta');
+      statusMeta.setAttribute('name', 'apple-mobile-web-app-status-bar-style');
+      document.head.appendChild(statusMeta);
     }
+    statusMeta.setAttribute('content', statusBarStyle);
   }, [effectiveTheme, visualStyle]);
 
   useEffect(() => {

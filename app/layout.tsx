@@ -9,7 +9,9 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "Cuebin",
-    statusBarStyle: "default",
+    // black-translucent: theme atmosphere paints under the status bar (client
+    // may switch to default on light themes for readable dark icons).
+    statusBarStyle: "black-translucent",
   },
   formatDetection: {
     telephone: false,
@@ -25,10 +27,11 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#D5DEE5",
+  themeColor: "#D5E2EA",
   colorScheme: "light",
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -37,6 +40,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         {/* iOS still honors the apple-prefixed capable meta for standalone Home Screen */}
         <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta
+          name="apple-mobile-web-app-status-bar-style"
+          content="black-translucent"
+        />
         <meta name="referrer" content="strict-origin-when-cross-origin" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
